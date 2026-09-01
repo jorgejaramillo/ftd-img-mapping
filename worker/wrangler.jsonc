@@ -1,0 +1,73 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ftd-img-mapping",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Sirve el frontend compilado (frontend/dist) y ejecuta el Worker primero
+  // para cualquier ruta /api/*, combinando SPA + API en un solo deploy.
+  "assets": {
+    "directory": "../frontend/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+
+  // IDs a completar tras ejecutar los comandos de `wrangler d1 create` / `r2 bucket create`
+  // documentados en docs/SETUP.md. No se crean recursos reales como parte de este build.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ftd-img-mapping-db",
+      "database_id": "REPLACE_AFTER_WRANGLER_D1_CREATE"
+    }
+  ],
+
+  "r2_buckets": [
+    { "binding": "PRODUCT_IMAGES", "bucket_name": "ftd-img-mapping-images" }
+  ],
+
+  "images": { "binding": "IMAGES" },
+
+  "queues": {
+    "producers": [{ "binding": "IMAGE_QUEUE", "queue": "image-processing" }],
+    "consumers": [
+      {
+        "queue": "image-processing",
+        "max_batch_size": 5,
+        "max_batch_timeout": 30,
+        "max_retries": 3,
+        "dead_letter_queue": "image-processing-dlq"
+      }
+    ]
+  },
+
+  "vars": {
+    "OUTPUT_FORMAT": "jpeg",
+    "OUTPUT_WIDTH": "1000",
+    "OUTPUT_HEIGHT": "1000",
+    "PRODUCT_OCCUPANCY": "0.75",
+    "BACKGROUND_COLOR": "#FFFFFF",
+    "MAX_ORIGINAL_IMAGE_BYTES": "15728640",
+    "DOWNLOAD_TIMEOUT_MS": "10000",
+    "ASSIGNMENT_BATCH_SIZE": "100",
+    "SEARCH_CANDIDATE_COUNT": "10",
+    // 2032 = Argentina (country-level, confirmado contra el listado oficial de
+    // locations de DataForSEO). Búsqueda de imágenes acotada a Google Argentina.
+    "DATAFORSEO_LOCATION_CODE": "2032",
+    "DATAFORSEO_LANGUAGE_CODE": "es"
+  },
+
+  // Simula la identidad de Cloudflare Access en `wrangler dev` sin necesidad de
+  // desplegar ni de habilitar Access. Reemplazar "aud" con el valor real una vez
+  // habilitado Access en el dashboard (Worker -> Settings -> Domains & Routes).
+  "access": {
+    "dev": {
+      "aud": "REPLACE_AFTER_ENABLING_ACCESS_IN_DASHBOARD",
+      "identity": { "email": "dev@local.test", "name": "Dev Local" }
+    }
+  },
+
+  "observability": { "enabled": true }
+}

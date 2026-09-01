@@ -1,0 +1,4 @@
+# Copiar a .dev.vars (gitignored) para desarrollo local con `wrangler dev`.
+# En producción, configurar con: wrangler secret put DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD
+DATAFORSEO_LOGIN=tu_login_dataforseo
+DATAFORSEO_PASSWORD=tu_password_dataforseo

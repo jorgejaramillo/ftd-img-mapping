@@ -1,0 +1,13 @@
+{
+  "name": "ftd-img-mapping",
+  "private": true,
+  "workspaces": ["frontend", "worker"],
+  "scripts": {
+    "dev:worker": "npm run dev --workspace=worker",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "build": "npm run build --workspace=frontend",
+    "typecheck": "npm run typecheck --workspace=frontend && npm run typecheck --workspace=worker",
+    "db:migrate:local": "npm run db:migrate:local --workspace=worker",
+    "cf-typegen": "npm run cf-typegen --workspace=worker"
+  }
+}
