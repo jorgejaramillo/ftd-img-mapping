@@ -1,16 +1,17 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
-import { requireAccess } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { assignNextBatch } from "../services/assignment";
-import { DataForSeoError, searchGoogleImages } from "../services/dataforseo";
+import { buildKeyword, DataForSeoError, searchGoogleImages } from "../services/dataforseo";
 import { tryInspectRemoteImage } from "../services/imagePipeline";
 import { getAssignedProducts, getProductById, reprocessProduct, saveCandidates, saveSelection } from "../db/queries";
+import { getOwnedProduct, PRODUCT_NOT_FOUND_BODY } from "../services/ownership";
 import { reprocessSchema, selectImageSchema } from "../utils/validation";
 import type { ImageCandidate, ProcessImageMessage } from "../types";
 
 export const productsRoutes = new Hono<AppEnv>();
 
-productsRoutes.use("*", requireAccess);
+productsRoutes.use("*", requireAuth);
 
 productsRoutes.post("/assign-batch", async (c) => {
   const user = c.get("user");
@@ -50,16 +51,29 @@ productsRoutes.post("/:id/search-images", async (c) => {
   const offset = Math.max(0, Number(c.req.query("offset") ?? "0") || 0);
   const pageSize = Number(c.env.SEARCH_CANDIDATE_COUNT ?? "10");
 
-  const product = await getProductById(c.env.DB, productId);
-  if (!product) return c.json({ error: "not_found" }, 404);
+  const product = await getOwnedProduct(c.env.DB, productId, c.get("user").email);
+  if (!product) return c.json(PRODUCT_NOT_FOUND_BODY, 404);
 
   let pool: ImageCandidate[];
+  // La consulta que se mandó a Google. Solo se conoce cuando se consultó en
+  // esta llamada; con el pool cacheado se puede recomponer igual, porque
+  // buildKeyword() es determinística sobre ean + nombre.
+  let query: string;
 
-  if (product.candidates_json) {
-    pool = JSON.parse(product.candidates_json) as ImageCandidate[];
+  // Un pool cacheado VACÍO no cuenta como caché: se vuelve a consultar. Si no,
+  // "Buscar de nuevo" leería para siempre ese vacío sin llamar a DataForSEO
+  // (le pasa a las filas que quedaron con '[]' guardado de antes).
+  const cachedPool = product.candidates_json
+    ? (JSON.parse(product.candidates_json) as ImageCandidate[])
+    : null;
+  const cached = cachedPool !== null && cachedPool.length > 0;
+
+  if (cached) {
+    pool = cachedPool;
+    query = buildKeyword(product.ean, product.product_name);
   } else {
     try {
-      pool = await searchGoogleImages({
+      const result = await searchGoogleImages({
         ean: product.ean,
         productName: product.product_name,
         locationCode: Number(c.env.DATAFORSEO_LOCATION_CODE ?? "2032"),
@@ -67,9 +81,28 @@ productsRoutes.post("/:id/search-images", async (c) => {
         login: c.env.DATAFORSEO_LOGIN,
         password: c.env.DATAFORSEO_PASSWORD,
       });
+      pool = result.candidates;
+      query = result.keyword;
     } catch (err) {
       if (err instanceof DataForSeoError) {
-        return c.json({ error: "dataforseo_error", message: err.message }, 502);
+        // Queda en los logs del Worker (observability está activo) con todo lo
+        // necesario para reproducir la consulta desde el dashboard.
+        console.error("dataforseo_error", {
+          sku: product.sku,
+          ean: product.ean,
+          keyword: err.detail.keyword,
+          statusCode: err.detail.statusCode,
+          message: err.message,
+        });
+        return c.json(
+          {
+            error: "dataforseo_error",
+            message: err.message,
+            query: err.detail.keyword,
+            statusCode: err.detail.statusCode,
+          },
+          502,
+        );
       }
       throw err;
     }
@@ -79,7 +112,10 @@ productsRoutes.post("/:id/search-images", async (c) => {
   const window = pool.slice(offset, windowEnd);
   const needsEnrichment = window.some((candidate) => candidate.width === null);
 
-  if (needsEnrichment || !product.candidates_json) {
+  // Un pool VACÍO no se cachea: si se guardara "[]", `candidates_json` pasaría
+  // a ser truthy y "Reintentar" devolvería para siempre ese vacío cacheado sin
+  // volver a consultar — exactamente el "no pasa nada" al reintentar.
+  if (pool.length > 0 && (needsEnrichment || !cached)) {
     const enrichedWindow = await Promise.all(window.map((candidate) => enrichCandidate(c.env.IMAGES, candidate)));
     for (let i = 0; i < enrichedWindow.length; i++) {
       pool[offset + i] = enrichedWindow[i];
@@ -87,10 +123,15 @@ productsRoutes.post("/:id/search-images", async (c) => {
     await saveCandidates(c.env.DB, productId, JSON.stringify(pool));
   }
 
+  if (pool.length === 0) {
+    console.warn("search_images_sin_resultados", { sku: product.sku, ean: product.ean, query });
+  }
+
   return c.json({
     candidates: pool.slice(offset, windowEnd),
     hasMore: windowEnd < pool.length,
     total: pool.length,
+    query,
   });
 });
 
@@ -102,8 +143,8 @@ productsRoutes.post("/:id/select", async (c) => {
     return c.json({ error: "invalid_body", details: parsed.error.flatten() }, 400);
   }
 
-  const product = await getProductById(c.env.DB, productId);
-  if (!product) return c.json({ error: "not_found" }, 404);
+  const product = await getOwnedProduct(c.env.DB, productId, c.get("user").email);
+  if (!product) return c.json(PRODUCT_NOT_FOUND_BODY, 404);
 
   if ("noSuitableImage" in parsed.data) {
     await saveSelection(c.env.DB, productId, { noSuitableImage: true });
@@ -126,8 +167,8 @@ productsRoutes.post("/:id/reprocess", async (c) => {
     return c.json({ error: "invalid_body", details: parsed.error.flatten() }, 400);
   }
 
-  const product = await getProductById(c.env.DB, productId);
-  if (!product) return c.json({ error: "not_found" }, 404);
+  const product = await getOwnedProduct(c.env.DB, productId, c.get("user").email);
+  if (!product) return c.json(PRODUCT_NOT_FOUND_BODY, 404);
 
   const batch = await reprocessProduct(c.env.DB, productId, parsed.data);
   if (!batch) {

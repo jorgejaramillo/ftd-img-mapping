@@ -28,7 +28,7 @@ export async function handleQueueBatch(batch: MessageBatch<ProcessImageMessage>,
       await markProductOriginalInfo(env.DB, productId, result.original);
 
       const extension = extensionForFormat(config.outputFormat);
-      const key = buildR2Key(sku, extension);
+      const key = buildR2Key(productId, sku, extension);
       await putProcessedImage(env.PRODUCT_IMAGES, key, result.finalBytes, contentTypeForFormat(config.outputFormat));
 
       await markProductCompleted(env.DB, productId, {

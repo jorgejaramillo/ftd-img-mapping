@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { Header } from "./components/Header";
+import { LoginPage } from "./pages/LoginPage";
 import { ImportPage } from "./pages/ImportPage";
 import { SelectionPage } from "./pages/SelectionPage";
 import { ProcessingPage } from "./pages/ProcessingPage";
 import { ResultsPage } from "./pages/ResultsPage";
+import { api } from "./lib/api";
 
 export type Route =
   | { name: "selection" }
@@ -31,6 +33,7 @@ export function navigate(pathname: string) {
 
 export function App() {
   const [route, setRoute] = useState<Route>(() => parseRoute(window.location.pathname));
+  const [authEmail, setAuthEmail] = useState<string | null | undefined>(undefined); // undefined = verificando
 
   useEffect(() => {
     const onPopState = () => setRoute(parseRoute(window.location.pathname));
@@ -38,9 +41,30 @@ export function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
+  useEffect(() => {
+    api
+      .me()
+      .then((res) => setAuthEmail(res.user.email))
+      .catch(() => setAuthEmail(null));
+  }, []);
+
+  async function handleLogout() {
+    await api.logout().catch(() => {});
+    setAuthEmail(null);
+    navigate("/");
+  }
+
+  if (authEmail === undefined) {
+    return <p className="hint" style={{ padding: 20 }}>Cargando...</p>;
+  }
+
+  if (authEmail === null) {
+    return <LoginPage onLoggedIn={setAuthEmail} />;
+  }
+
   return (
     <div className="app">
-      <Header route={route} />
+      <Header route={route} userEmail={authEmail} onLogout={handleLogout} />
       <main className="main">
         {route.name === "import" && <ImportPage />}
         {route.name === "selection" && <SelectionPage />}

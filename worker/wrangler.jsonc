@@ -20,7 +20,7 @@
     {
       "binding": "DB",
       "database_name": "ftd-img-mapping-db",
-      "database_id": "REPLACE_AFTER_WRANGLER_D1_CREATE"
+      "database_id": "a7cfe047-85db-4690-8a7a-e9a5451ce2f7"
     }
   ],
 
@@ -57,16 +57,6 @@
     // locations de DataForSEO). Búsqueda de imágenes acotada a Google Argentina.
     "DATAFORSEO_LOCATION_CODE": "2032",
     "DATAFORSEO_LANGUAGE_CODE": "es"
-  },
-
-  // Simula la identidad de Cloudflare Access en `wrangler dev` sin necesidad de
-  // desplegar ni de habilitar Access. Reemplazar "aud" con el valor real una vez
-  // habilitado Access en el dashboard (Worker -> Settings -> Domains & Routes).
-  "access": {
-    "dev": {
-      "aud": "REPLACE_AFTER_ENABLING_ACCESS_IN_DASHBOARD",
-      "identity": { "email": "dev@local.test", "name": "Dev Local" }
-    }
   },
 
   "observability": { "enabled": true }

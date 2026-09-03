@@ -28,7 +28,33 @@ interface DataForSeoResponse {
   tasks?: DataForSeoTaskResult[];
 }
 
-export class DataForSeoError extends Error {}
+/** Falla real de la API (credenciales, cuota, caída, respuesta inesperada).
+ * "Sin resultados" NO entra acá: eso es un resultado vacío legítimo. */
+export class DataForSeoError extends Error {
+  constructor(
+    message: string,
+    readonly detail: { keyword: string; statusCode?: number },
+  ) {
+    super(message);
+    this.name = "DataForSeoError";
+  }
+}
+
+export interface SearchImagesResult {
+  /** La consulta EXACTA que se mandó a Google Images. Se devuelve siempre —
+   * también sin resultados — porque es el dato que hace falta para entender
+   * por qué un producto no encontró imágenes. */
+  keyword: string;
+  candidates: ImageCandidate[];
+}
+
+// 40501 = "No Search Results": la tarea corrió bien, Google simplemente no
+// devolvió nada para ese keyword. Reintentar la misma consulta da lo mismo.
+const NO_RESULTS_STATUS_CODE = 40501;
+
+function isNoResults(statusCode: number, statusMessage: string): boolean {
+  return statusCode === NO_RESULTS_STATUS_CODE || /no search results/i.test(statusMessage);
+}
 
 export interface SearchImagesInput {
   ean: string;
@@ -39,7 +65,7 @@ export interface SearchImagesInput {
   password: string;
 }
 
-function buildKeyword(ean: string, productName: string): string {
+export function buildKeyword(ean: string, productName: string): string {
   // El nombre va entre comillas (frase exacta) para acotar la coincidencia al
   // texto literal del producto; el EAN queda suelto porque es un solo token
   // (comillas no aportan nada ahí). Se limpian comillas propias del nombre
@@ -49,7 +75,7 @@ function buildKeyword(ean: string, productName: string): string {
   return [eanPart, namePart ? `"${namePart}"` : ""].filter(Boolean).join(" ");
 }
 
-export async function searchGoogleImages(input: SearchImagesInput): Promise<ImageCandidate[]> {
+export async function searchGoogleImages(input: SearchImagesInput): Promise<SearchImagesResult> {
   const keyword = buildKeyword(input.ean, input.productName);
 
   const credentials = btoa(`${input.login}:${input.password}`);
@@ -70,14 +96,32 @@ export async function searchGoogleImages(input: SearchImagesInput): Promise<Imag
   });
 
   if (!response.ok) {
-    throw new DataForSeoError(`DataForSEO respondió HTTP ${response.status}`);
+    throw new DataForSeoError(`DataForSEO respondió HTTP ${response.status}`, { keyword });
   }
 
   const data = (await response.json()) as DataForSeoResponse;
   const taskResult = data.tasks?.[0];
 
-  if (!taskResult || taskResult.status_code >= 40000) {
-    throw new DataForSeoError(taskResult?.status_message ?? "Respuesta inválida de DataForSEO");
+  if (!taskResult) {
+    throw new DataForSeoError("Respuesta inválida de DataForSEO (sin tareas)", {
+      keyword,
+      statusCode: data.status_code,
+    });
+  }
+
+  if (taskResult.status_code >= 40000) {
+    // "Sin resultados" no es un fallo: la consulta corrió y Google no devolvió
+    // nada. Se responde con la lista vacía para que la tarjeta lo muestre como
+    // "no se encontraron imágenes" (accionable) y no como un error rojo con un
+    // "Reintentar" que repetiría exactamente la misma consulta.
+    if (isNoResults(taskResult.status_code, taskResult.status_message)) {
+      return { keyword, candidates: [] };
+    }
+
+    throw new DataForSeoError(taskResult.status_message || "Error de DataForSEO", {
+      keyword,
+      statusCode: taskResult.status_code,
+    });
   }
 
   const items = taskResult.result?.[0]?.items ?? [];
@@ -89,7 +133,7 @@ export async function searchGoogleImages(input: SearchImagesInput): Promise<Imag
   // Devuelve TODOS los resultados de imagen que trajo DataForSEO (hasta ~100
   // en una sola llamada, ya pagada): el llamador decide cuántos mostrar y
   // pagina sobre este mismo pool sin pedir una consulta nueva a DataForSEO.
-  return imageItems.map((item, index) => ({
+  const candidates = imageItems.map((item, index) => ({
     position: item.rank_group ?? index + 1,
     imageUrl: item.source_url,
     sourceUrl: item.url ?? item.source_url,
@@ -101,4 +145,6 @@ export async function searchGoogleImages(input: SearchImagesInput): Promise<Imag
     format: null,
     thumbnailUrl: item.encoded_url ?? null,
   }));
+
+  return { keyword, candidates };
 }

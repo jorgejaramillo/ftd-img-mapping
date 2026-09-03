@@ -1,7 +1,17 @@
 import type { OutputFormat } from "./imagePipeline";
 
-export function buildR2Key(sku: string, extension: string): string {
-  return `products/${sku}.${extension}`;
+/**
+ * La key se namespacea por productId porque el SKU dejó de ser único global
+ * (ahora es único por dueño, ver migración 0003): si dos usuarios importan el
+ * mismo archivo, `products/<sku>.jpg` haría que uno pisara la imagen del otro.
+ * Sigue siendo determinística por producto, así que un PUT repetido — reintento
+ * de la cola o reproceso manual — sobrescribe siempre el mismo objeto.
+ *
+ * El nombre de archivo final (lo último tras la última "/") sigue siendo
+ * `<sku>.<ext>`, que es lo que ven las descargas sueltas y las entradas del ZIP.
+ */
+export function buildR2Key(productId: string, sku: string, extension: string): string {
+  return `products/${productId}/${sku}.${extension}`;
 }
 
 export function contentTypeForFormat(format: OutputFormat): string {

@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
-import { requireAccess } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { ExcelValidationError, parseProductsFile } from "../services/excel";
 import { generateId } from "../utils/ids";
 import {
+  clearUserProductData,
   getExistingSkus,
   getImport,
   insertImport,
@@ -14,7 +15,7 @@ import {
 
 export const importsRoutes = new Hono<AppEnv>();
 
-importsRoutes.use("*", requireAccess);
+importsRoutes.use("*", requireAuth);
 
 importsRoutes.post("/", async (c) => {
   const body = await c.req.parseBody();
@@ -51,15 +52,18 @@ importsRoutes.post("/", async (c) => {
   const importId = generateId("import");
   await insertImport(c.env.DB, { id: importId, filename: file.name, createdBy: user.email });
 
+  // Duplicados solo contra el catálogo PROPIO: que otro usuario haya subido el
+  // mismo archivo no debe vaciar este import.
   const existingSkus = await getExistingSkus(
     c.env.DB,
+    user.email,
     parsed.rows.map((r) => r.sku),
   );
 
   const duplicateAgainstDb = parsed.rows.filter((r) => existingSkus.has(r.sku));
   const newRows = parsed.rows.filter((r) => !existingSkus.has(r.sku));
 
-  await insertProducts(c.env.DB, importId, newRows);
+  await insertProducts(c.env.DB, importId, user.email, newRows);
 
   const duplicateRows = parsed.duplicateRows + duplicateAgainstDb.length;
   await updateImportCounts(c.env.DB, importId, {
@@ -79,12 +83,25 @@ importsRoutes.post("/", async (c) => {
 });
 
 importsRoutes.get("/", async (c) => {
-  const imports = await listImports(c.env.DB);
+  const imports = await listImports(c.env.DB, c.get("user").email);
   return c.json({ imports });
 });
 
 importsRoutes.get("/:id", async (c) => {
   const record = await getImport(c.env.DB, c.req.param("id"));
-  if (!record) return c.json({ error: "not_found" }, 404);
+  // Un import ajeno se responde como inexistente: no se filtra ni su
+  // existencia ni el nombre del archivo de otra cuenta.
+  if (!record || record.created_by !== c.get("user").email) {
+    return c.json({ error: "not_found", message: "Import no encontrado." }, 404);
+  }
   return c.json({ import: record });
+});
+
+/** Borra el catálogo DEL USUARIO ACTUAL (sus productos, imports y lotes) para
+ * empezar de cero. No toca usuarios/sesiones ni los datos de otras cuentas.
+ * Las imágenes ya generadas quedan huérfanas en R2 (no se referencian desde
+ * ningún lado, no afectan nada visible). */
+importsRoutes.post("/clear", async (c) => {
+  await clearUserProductData(c.env.DB, c.get("user").email);
+  return c.json({ ok: true });
 });

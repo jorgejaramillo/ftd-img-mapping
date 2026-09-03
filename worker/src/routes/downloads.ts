@@ -1,18 +1,21 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
-import { requireAccess } from "../middleware/auth";
-import { getBatchResults, getCompletedProductsForBatch, getProductById } from "../db/queries";
+import { requireAuth } from "../middleware/auth";
+import { getBatchResults, getCompletedProductsForBatch } from "../db/queries";
+import { BATCH_NOT_FOUND_BODY, getOwnedProduct, ownsBatch } from "../services/ownership";
 import { getProcessedImage } from "../services/r2";
 import { buildZip, type ZipEntry } from "../services/zip";
 
 export const downloadsRoutes = new Hono<AppEnv>();
 
-downloadsRoutes.use("*", requireAccess);
-
-downloadsRoutes.get("/products/:id/download", async (c) => {
-  const product = await getProductById(c.env.DB, c.req.param("id"));
+// Middleware por-ruta (no ".use('*', ...)"): downloadsRoutes se monta en el
+// prefijo raíz "/api" para lograr las rutas finales exactas, y un ".use('*')"
+// ahí terminaría protegiendo TODO "/api/*" a nivel del router combinado —
+// incluyendo "/api/auth/login", que debe quedar público. Ver auth.ts.
+downloadsRoutes.get("/products/:id/download", requireAuth, async (c) => {
+  const product = await getOwnedProduct(c.env.DB, c.req.param("id"), c.get("user").email);
   if (!product || !product.final_r2_key) {
-    return c.json({ error: "not_found" }, 404);
+    return c.json({ error: "not_found", message: "Producto o imagen no encontrada." }, 404);
   }
 
   const object = await getProcessedImage(c.env.PRODUCT_IMAGES, product.final_r2_key);
@@ -27,8 +30,15 @@ downloadsRoutes.get("/products/:id/download", async (c) => {
   });
 });
 
-downloadsRoutes.get("/processing/:batchId/download-zip", async (c) => {
+// Solo empaqueta lo que ya está 'completed', así que sirve igual con el lote
+// terminado o a medio procesar: el frontend lo ofrece como "descargar las que
+// ya están listas" mientras la cola sigue trabajando.
+downloadsRoutes.get("/processing/:batchId/download-zip", requireAuth, async (c) => {
   const batchId = c.req.param("batchId");
+  if (!(await ownsBatch(c.env.DB, batchId, c.get("user").email))) {
+    return c.json(BATCH_NOT_FOUND_BODY, 404);
+  }
+
   const products = await getCompletedProductsForBatch(c.env.DB, batchId);
 
   const entries: ZipEntry[] = [];
@@ -50,8 +60,12 @@ downloadsRoutes.get("/processing/:batchId/download-zip", async (c) => {
   });
 });
 
-downloadsRoutes.get("/processing/:batchId/export-csv", async (c) => {
+downloadsRoutes.get("/processing/:batchId/export-csv", requireAuth, async (c) => {
   const batchId = c.req.param("batchId");
+  if (!(await ownsBatch(c.env.DB, batchId, c.get("user").email))) {
+    return c.json(BATCH_NOT_FOUND_BODY, 404);
+  }
+
   const products = await getBatchResults(c.env.DB, batchId);
 
   const rows = ["sku,image_url,status"];

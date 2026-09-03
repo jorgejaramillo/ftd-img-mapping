@@ -1,21 +1,24 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
-import { requireAccess } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { generateId } from "../utils/ids";
 import {
   createProcessingBatch,
   deleteProcessingBatch,
   getBatchResults,
   getBatchStatusCounts,
+  getErrorProductsForBatch,
+  markProductsAsProcessing,
   markSelectedAsProcessing,
   markSkippedForBatch,
   updateProcessingBatchTotal,
 } from "../db/queries";
+import { BATCH_NOT_FOUND_BODY, ownsBatch } from "../services/ownership";
 import type { ProcessImageMessage } from "../types";
 
 export const processingRoutes = new Hono<AppEnv>();
 
-processingRoutes.use("*", requireAccess);
+processingRoutes.use("*", requireAuth);
 
 processingRoutes.post("/start", async (c) => {
   const user = c.get("user");
@@ -61,11 +64,60 @@ processingRoutes.post("/start", async (c) => {
 });
 
 processingRoutes.get("/:batchId/status", async (c) => {
-  const counts = await getBatchStatusCounts(c.env.DB, c.req.param("batchId"));
+  const batchId = c.req.param("batchId");
+  if (!(await ownsBatch(c.env.DB, batchId, c.get("user").email))) {
+    return c.json(BATCH_NOT_FOUND_BODY, 404);
+  }
+
+  const counts = await getBatchStatusCounts(c.env.DB, batchId);
   return c.json({ counts });
 });
 
 processingRoutes.get("/:batchId/results", async (c) => {
-  const products = await getBatchResults(c.env.DB, c.req.param("batchId"));
+  const batchId = c.req.param("batchId");
+  if (!(await ownsBatch(c.env.DB, batchId, c.get("user").email))) {
+    return c.json(BATCH_NOT_FOUND_BODY, 404);
+  }
+
+  const products = await getBatchResults(c.env.DB, batchId);
   return c.json({ products });
+});
+
+/** Reencola con la MISMA imagen ya seleccionada todos los productos que
+ * quedaron en 'error' en este batch — típicamente por una falla transitoria
+ * del servicio de Images, no porque la imagen elegida esté mal. No requiere
+ * volver a elegir imagen (a diferencia de /products/:id/reprocess). */
+processingRoutes.post("/:batchId/retry-errors", async (c) => {
+  const batchId = c.req.param("batchId");
+  if (!(await ownsBatch(c.env.DB, batchId, c.get("user").email))) {
+    return c.json(BATCH_NOT_FOUND_BODY, 404);
+  }
+
+  const errorProducts = await getErrorProductsForBatch(c.env.DB, batchId);
+  const retryable = errorProducts.filter((p) => p.selected_image_url);
+
+  if (retryable.length === 0) {
+    return c.json({ retried: 0 });
+  }
+
+  await markProductsAsProcessing(
+    c.env.DB,
+    retryable.map((p) => p.id),
+  );
+
+  const messages: Array<{ body: ProcessImageMessage }> = retryable.map((product) => ({
+    body: {
+      productId: product.id,
+      processingBatchId: batchId,
+      sku: product.sku,
+      imageUrl: product.selected_image_url!,
+    },
+  }));
+
+  const CHUNK_SIZE = 100;
+  for (let i = 0; i < messages.length; i += CHUNK_SIZE) {
+    await c.env.IMAGE_QUEUE.sendBatch(messages.slice(i, i + CHUNK_SIZE));
+  }
+
+  return c.json({ retried: retryable.length });
 });

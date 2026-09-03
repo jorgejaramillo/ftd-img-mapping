@@ -1,6 +1,14 @@
 import { navigate, type Route } from "../App";
 
-export function Header({ route }: { route: Route }) {
+export function Header({
+  route,
+  userEmail,
+  onLogout,
+}: {
+  route: Route;
+  userEmail: string;
+  onLogout: () => void;
+}) {
   return (
     <header className="header">
       <span className="header-title">Mapeo de imágenes</span>
@@ -10,6 +18,10 @@ export function Header({ route }: { route: Route }) {
         </button>
         <button className={route.name === "import" ? "active" : ""} onClick={() => navigate("/import")}>
           Importar CSV
+        </button>
+        <span className="header-user">{userEmail}</span>
+        <button className="header-logout" onClick={onLogout}>
+          Cerrar sesión
         </button>
       </nav>
     </header>

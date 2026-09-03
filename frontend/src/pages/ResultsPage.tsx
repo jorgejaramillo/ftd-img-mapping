@@ -12,17 +12,49 @@ function formatBytes(bytes: number | null): string {
 export function ResultsPage({ batchId }: { batchId: string }) {
   const [products, setProducts] = useState<Product[] | null>(null);
   const [reprocessingId, setReprocessingId] = useState<string | null>(null);
+  const [retryingErrors, setRetryingErrors] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.getBatchResults(batchId).then((res) => setProducts(res.products));
+    api
+      .getBatchResults(batchId)
+      .then((res) => setProducts(res.products))
+      .catch((err) => setLoadError(err instanceof Error ? err.message : "Error cargando resultados"));
   }, [batchId]);
 
   async function handleReprocess(product: Product, candidate: ImageCandidate) {
-    await api.reprocess(product.id, { imageUrl: candidate.imageUrl, sourceUrl: candidate.sourceUrl });
-    setReprocessingId(null);
-    navigate(`/processing/${batchId}`);
+    setActionError(null);
+    try {
+      await api.reprocess(product.id, { imageUrl: candidate.imageUrl, sourceUrl: candidate.sourceUrl });
+      setReprocessingId(null);
+      navigate(`/processing/${batchId}`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "No se pudo reprocesar");
+    }
   }
 
+  async function handleRetryErrors() {
+    setRetryingErrors(true);
+    setActionError(null);
+    try {
+      await api.retryErrors(batchId);
+      navigate(`/processing/${batchId}`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "No se pudo reprocesar los errores");
+    } finally {
+      setRetryingErrors(false);
+    }
+  }
+
+  if (loadError) {
+    return (
+      <div className="page">
+        <p className="error">{loadError}</p>
+        <button onClick={() => window.location.reload()}>Recargar</button>
+      </div>
+    );
+  }
   if (!products) return <p className="hint">Cargando resultados...</p>;
 
   const completed = products.filter((p) => p.status === "completed").length;
@@ -39,9 +71,16 @@ export function ResultsPage({ batchId }: { batchId: string }) {
         <span>Total: {products.length}</span>
       </div>
 
+      {actionError && <p className="error">{actionError}</p>}
+
       <div className="results-actions">
         <a href={api.downloadZipUrl(batchId)}>Descargar ZIP</a>
         <a href={api.exportCsvUrl(batchId)}>Exportar CSV</a>
+        {errors > 0 && (
+          <button onClick={handleRetryErrors} disabled={retryingErrors}>
+            {retryingErrors ? "Reencolando..." : `Reprocesar ${errors} con error`}
+          </button>
+        )}
       </div>
 
       <table className="results-table">

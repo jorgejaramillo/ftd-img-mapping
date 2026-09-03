@@ -1,10 +1,25 @@
 import { useEffect, useState } from "react";
-import type { ImageCandidate, Product, ProductSearchState } from "../types";
-import { api } from "../lib/api";
+import type { ImageCandidate, Product, ProductSearchState, SearchError } from "../types";
+import { api, ApiError } from "../lib/api";
 import { runWithConcurrency } from "../lib/concurrencyPool";
 import { ProductCard } from "../components/ProductCard";
 import { StickyProgressBar } from "../components/StickyProgressBar";
 import { navigate } from "../App";
+
+/** Traduce cualquier fallo de búsqueda al detalle que necesita la tarjeta.
+ * Un 404 (el producto ya no existe) no es reintentable: el botón solo tiene
+ * sentido cuando repetir la llamada puede dar otro resultado. */
+function toSearchError(err: unknown): SearchError {
+  if (err instanceof ApiError) {
+    return {
+      message: err.message,
+      query: err.query,
+      statusCode: err.statusCode,
+      retryable: err.httpStatus !== 404,
+    };
+  }
+  return { message: err instanceof Error ? err.message : "Error buscando imágenes", retryable: true };
+}
 
 const SEARCH_CONCURRENCY = 8;
 // Debe coincidir con SEARCH_CANDIDATE_COUNT del worker (tamaño de página que
@@ -46,16 +61,32 @@ export function SelectionPage() {
 
       // Búsquedas de imágenes con concurrencia acotada: nunca se disparan las
       // 100 a la vez, y cada tarjeta se rellena progresivamente al resolver.
+      // Si UN producto falla (ej. se borró el catálogo propio desde otra pestaña mientras esta
+      // página estaba abierta) no debe tumbar la búsqueda de los demás ni la
+      // pantalla completa — por eso el try/catch vive DENTRO del worker.
       const productsNeedingSearch = initial.products.filter((p) => !p.candidates_json);
       await runWithConcurrency(
         productsNeedingSearch,
         SEARCH_CONCURRENCY,
-        (product) => api.searchImages(product.id),
-        (result, product) => {
+        async (product) => {
+          try {
+            return { ok: true as const, result: await api.searchImages(product.id) };
+          } catch (err) {
+            return { ok: false as const, error: toSearchError(err) };
+          }
+        },
+        (outcome, product) => {
           if (cancelled) return;
           setSearchStateByProduct((prev) => ({
             ...prev,
-            [product.id]: { candidates: result.candidates, hasMore: result.hasMore, loadingMore: false },
+            [product.id]: outcome.ok
+              ? {
+                  candidates: outcome.result.candidates,
+                  hasMore: outcome.result.hasMore,
+                  loadingMore: false,
+                  query: outcome.result.query,
+                }
+              : { candidates: [], hasMore: false, loadingMore: false, error: outcome.error },
           }));
         },
       );
@@ -72,33 +103,37 @@ export function SelectionPage() {
     setProducts((prev) => prev?.map((p) => (p.id === updated.id ? updated : p)) ?? prev);
   }
 
-  async function handleLoadMore(product: Product) {
-    const current = searchStateByProduct[product.id];
-    if (!current || current.loadingMore) return;
-
-    setSearchStateByProduct((prev) => ({ ...prev, [product.id]: { ...current, loadingMore: true } }));
+  async function runSearch(product: Product, offset: number) {
+    setSearchStateByProduct((prev) => {
+      const existing = prev[product.id];
+      return { ...prev, [product.id]: { candidates: existing?.candidates ?? [], hasMore: false, loadingMore: true } };
+    });
 
     try {
-      const result = await api.searchImages(product.id, current.candidates.length);
+      const result = await api.searchImages(product.id, offset);
       setSearchStateByProduct((prev) => {
         const existing = prev[product.id];
-        if (!existing) return prev;
+        const priorCandidates = offset === 0 ? [] : (existing?.candidates ?? []);
         return {
           ...prev,
           [product.id]: {
-            candidates: [...existing.candidates, ...result.candidates],
+            candidates: [...priorCandidates, ...result.candidates],
             hasMore: result.hasMore,
             loadingMore: false,
+            query: result.query,
           },
         };
       });
     } catch (err) {
-      setSearchStateByProduct((prev) => {
-        const existing = prev[product.id];
-        if (!existing) return prev;
-        return { ...prev, [product.id]: { ...existing, loadingMore: false } };
-      });
-      setError(err instanceof Error ? err.message : "Error buscando más imágenes");
+      setSearchStateByProduct((prev) => ({
+        ...prev,
+        [product.id]: {
+          candidates: prev[product.id]?.candidates ?? [],
+          hasMore: false,
+          loadingMore: false,
+          error: toSearchError(err),
+        },
+      }));
     }
   }
 
@@ -114,7 +149,14 @@ export function SelectionPage() {
     }
   }
 
-  if (error) return <p className="error">{error}</p>;
+  if (error) {
+    return (
+      <div className="page">
+        <p className="error">{error}</p>
+        <button onClick={() => window.location.reload()}>Recargar</button>
+      </div>
+    );
+  }
   if (!products) return <p className="hint">Cargando productos...</p>;
 
   if (products.length === 0) {
@@ -137,7 +179,8 @@ export function SelectionPage() {
             product={product}
             searchState={searchStateByProduct[product.id] ?? null}
             onSelectionChange={handleSelectionChange}
-            onLoadMore={() => handleLoadMore(product)}
+            onLoadMore={() => runSearch(product, searchStateByProduct[product.id]?.candidates.length ?? 0)}
+            onRetry={() => runSearch(product, 0)}
           />
         ))}
       </div>

@@ -34,9 +34,27 @@ export interface AuthUser {
   name?: string;
 }
 
+export interface UserRow {
+  id: string;
+  email: string;
+  password_hash: string;
+  password_salt: string;
+  created_at: string;
+}
+
+export interface SessionRow {
+  id: string;
+  user_id: string;
+  created_at: string;
+  expires_at: string;
+}
+
 export interface ProductRow {
   id: string;
   import_id: string;
+  /** Dueño del producto = quien subió el import. Cada usuario solo ve, asigna
+   * y borra lo suyo (ver migración 0003). */
+  owner_email: string;
   ean: string;
   product_name: string;
   sku: string;

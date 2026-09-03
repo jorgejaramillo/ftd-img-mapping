@@ -1,39 +1,23 @@
 import { createMiddleware } from "hono/factory";
+import { getCookie } from "hono/cookie";
 import type { AppEnv } from "../env";
+import { getValidSessionUser } from "../db/queries";
 
-interface AccessIdentity {
-  email?: string;
-  name?: string;
-}
+export const SESSION_COOKIE_NAME = "session";
 
-interface AccessBinding {
-  getIdentity: () => Promise<AccessIdentity | null>;
-}
-
-/**
- * Cloudflare Access, una vez habilitado sobre la ruta de este Worker (ver
- * docs/SETUP.md), adjunta un `access` al ExecutionContext con getIdentity().
- * Es la forma moderna de leer la identidad autenticada sin validar a mano el
- * JWT del header Cf-Access-Jwt-Assertion.
- *
- * En desarrollo local, el bloque `access.dev` de wrangler.jsonc simula esta
- * identidad automáticamente al correr `wrangler dev`.
- */
-export const requireAccess = createMiddleware<AppEnv>(async (c, next) => {
-  const access = (c.executionCtx as unknown as { access?: AccessBinding }).access;
-
-  if (!access) {
-    return c.json(
-      { error: "unauthorized", message: "Cloudflare Access no autenticó esta petición" },
-      401,
-    );
+/** Login propio (email/password en D1 + sesión por cookie) — reemplaza el
+ * flujo anterior basado en Cloudflare Access. */
+export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
+  const sessionId = getCookie(c, SESSION_COOKIE_NAME);
+  if (!sessionId) {
+    return c.json({ error: "unauthorized", message: "No hay sesión activa" }, 401);
   }
 
-  const identity = await access.getIdentity();
-  if (!identity?.email) {
-    return c.json({ error: "forbidden" }, 403);
+  const user = await getValidSessionUser(c.env.DB, sessionId);
+  if (!user) {
+    return c.json({ error: "unauthorized", message: "Sesión inválida o expirada" }, 401);
   }
 
-  c.set("user", { email: identity.email, name: identity.name });
+  c.set("user", { email: user.email });
   await next();
 });

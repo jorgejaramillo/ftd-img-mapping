@@ -25,7 +25,7 @@ Wrangler simula D1, R2 y Queues localmente (estado en `worker/.wrangler/state`).
 cp worker/.dev.vars.example worker/.dev.vars
 # editar worker/.dev.vars con credenciales reales de DataForSEO
 
-npm run db:migrate:local   # aplica worker/migrations/0001_init.sql en D1 local
+npm run db:migrate:local   # aplica las migraciones de worker/migrations/ pendientes en D1 local
 npm run dev:worker         # wrangler dev, sirve API + queue consumer en :8787
 npm run dev:frontend       # vite dev, con proxy de /api hacia :8787
 ```

@@ -20,15 +20,33 @@ export interface ImageCandidate {
   thumbnailUrl: string | null;
 }
 
+export interface SearchError {
+  message: string;
+  /** Consulta exacta que se envió a Google Images. Es el dato clave para
+   * entender por qué un producto no encontró nada (ej. un EAN corrupto). */
+  query?: string;
+  /** status_code de DataForSEO — NO es el código HTTP. */
+  statusCode?: number;
+  /** false cuando reintentar la misma consulta daría exactamente lo mismo. */
+  retryable: boolean;
+}
+
 export interface ProductSearchState {
   candidates: ImageCandidate[];
   hasMore: boolean;
   loadingMore: boolean;
+  /** Consulta usada en esta búsqueda; se muestra cuando no hubo resultados. */
+  query?: string;
+  // Falla puntual de ESTE producto (ej. ya no existe porque se borró el
+  // catálogo propio mientras la página estaba abierta) — nunca debe tumbar toda la
+  // pantalla, solo esta tarjeta.
+  error?: SearchError;
 }
 
 export interface Product {
   id: string;
   import_id: string;
+  owner_email: string;
   ean: string;
   product_name: string;
   sku: string;

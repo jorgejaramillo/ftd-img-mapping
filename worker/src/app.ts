@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "./env";
+import { authRoutes } from "./routes/auth";
 import { identityRoutes } from "./routes/identity";
 import { importsRoutes } from "./routes/imports";
 import { productsRoutes } from "./routes/products";
@@ -8,6 +9,7 @@ import { downloadsRoutes } from "./routes/downloads";
 
 export const app = new Hono<AppEnv>();
 
+app.route("/api/auth", authRoutes);
 app.route("/api", identityRoutes);
 app.route("/api/imports", importsRoutes);
 app.route("/api/products", productsRoutes);
